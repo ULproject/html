@@ -1,0 +1,321 @@
+<!--
+------------------------------------------------------------------------
+ HTMLでクォータニオン (1回目)
+
+ by ULproject for HTML(JavaScript, canvas) 2021.6
+
+ 行列なし
+ コメントの大文字は複合-四元数(quaternion)、小文字はベクトルとスカラー
+------------------------------------------------------------------------
+-->
+<!DOctxYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>HTMLでクォータニオン (1回目) ULproject</title>
+</head>
+<body>
+<p id="quaternion1"></p>
+<script>
+
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d');
+ 
+canvas.width  = '640';
+canvas.height = '400';
+
+document.body.appendChild(canvas);
+
+//----------------------------------------------------------------------
+// 描画関数
+//----------------------------------------------------------------------
+function cls(c)
+{
+  ctx.fillStyle = c;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+function color(c)
+{
+  ctx.fillStyle   = c;
+  ctx.strokeStyle = c;
+}
+function line(x1, y1, x2, y2, c)
+{
+  ctx.strokeStyle = c;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.closePath();
+}
+function lineb(x, y, w, h, c)
+{
+  ctx.strokeStyle = c;
+  ctx.strokeRect(x, y, w, h);
+}
+function linebf(x, y, w, h, c)
+{
+  ctx.fillStyle = c;
+  ctx.fillRect(x, y, w, h);
+}
+
+//----------------------------------------------------------------------
+// inkey
+//----------------------------------------------------------------------
+var Key = new Array(256);
+for (var i = 0; i < 256; i++) Key[i] = 0;
+window.onkeydown = function(event) { Key[event.keyCode] = 1; }
+window.onkeyup   = function(event) { Key[event.keyCode] = 0; }
+
+//----------------------------------------------------------------------
+// 共有変数
+//----------------------------------------------------------------------
+var Ic = '#ff0'; // 色1
+var Id = '#0f0'; // 色2
+var In = 8; // 頂点の数
+var Pp = [[50,30,-80], [-50,30,-80], [-50,-30,-80], [50,-30,-80],
+          [50,30,  0], [-50,30,  0], [-50,-30,  0], [50,-30,  0]];
+var Vr = 10; // 視半径
+var Vz = 40; // 視点距離(焦点距離)
+var Q  = new Array(8); // Current 複合四元数
+var Mode = 0; // Quaternion mode (0:Model mode 1:View mode)
+
+//----------------------------------------------------------------------
+// 四元数の積 ULproject
+//
+// inp q1=(w1, x1, y1, z1),q2=(w2, x2, y2, z2)
+// out _q=(w0, x0, y0, z0) = (w1, x1, y1, z1)(w2, x2, y2, z2)
+//----------------------------------------------------------------------
+function Multqq(_q, q1, q2)
+{
+  var w, x, y, z;
+
+  w = q1[0]*q2[0] - q1[1]*q2[1] - q1[2]*q2[2] - q1[3]*q2[3];
+  x = q1[0]*q2[1] + q1[1]*q2[0] + q1[2]*q2[3] - q1[3]*q2[2];
+  y = q1[0]*q2[2] + q1[2]*q2[0] + q1[3]*q2[1] - q1[1]*q2[3];
+  z = q1[0]*q2[3] + q1[3]*q2[0] + q1[1]*q2[2] - q1[2]*q2[1];
+  _q[0] = w; _q[1] = x; _q[2] = y; _q[3] = z;
+}
+
+//----------------------------------------------------------------------
+// 複合四元数とベクトルの積 ULproject
+//
+// inp Q,p
+// out _p1 (_p1 = RpR~ + T)  R~ = Rの共役
+//----------------------------------------------------------------------
+function Product(_p1, p)
+{
+  var q1 = new Array(4);
+  var q2 = new Array(4);
+
+  for (i = 0; i < In; i++)
+  {
+     q1[0] =   0 ; q1[1] = p[i][0]; q1[2] = p[i][1]; q1[3] = p[i][2];
+     q2[0] = Q[0]; q2[1] = -Q[1]  ; q2[2] = -Q[2]  ; q2[3] = -Q[3]  ;
+     Multqq(q1, q1, q2); //---    p Qr~
+     Multqq(q1, Q , q1); //--- Qr p Qr~
+     _p1[i][0] = q1[1] + Q[5];
+     _p1[i][1] = q1[2] + Q[6];
+     _p1[i][2] = q1[3] + Q[7]; //--- p'= Qr p Qr~ + Qt
+  }
+}
+
+//----------------------------------------------------------------------
+// 複合四元数の積(Q = QA model mode , Q = AQ view mode) ULproject
+//
+// inp A
+// out Q (Qr=QrAr, Qt=Qt + QrAtQr~) (Qr=ArQr , Qt=At + ArQtAr~)
+//----------------------------------------------------------------------
+function Mult(A)
+{
+  var q = new Array(4);
+
+  if (Mode)
+  { //--- Q = AQ
+    q[0] = A[0]; q[1] = -A[1]; q[2] = -A[2]; q[3] = -A[3];
+    Multqq(q, Q.slice(4), q); //---   QtAr~
+    Multqq(q, A         , q); //--- ArQtAr~
+    Q[4] = A[4] + q[0];
+    Q[5] = A[5] + q[1];
+    Q[6] = A[6] + q[2];
+    Q[7] = A[7] + q[3]; //--- Qt = At + ArQtAr~
+    Multqq(Q, A, Q);    //--- Qr = ArQr
+  }
+  else
+  { //--- Q = QA
+    q[0] = Q[0]; q[1] = -Q[1]; q[2] = -Q[2]; q[3] = -Q[3];
+    Multqq(q, A.slice(4), q); //---   AtQr~
+    Multqq(q, Q         , q); //--- QrAtQr~
+    Q[4] += q[0];
+    Q[5] += q[1];
+    Q[6] += q[2];
+    Q[7] += q[3];    //--- Qt = Qt + QrAtQr~
+    Multqq(Q, Q, A); //--- Qr = QrAr
+  }
+}
+
+//----------------------------------------------------------------------
+// 単位複合四元数 ULproject
+//
+// out Q
+//----------------------------------------------------------------------
+function Identity()
+{
+  Q[0] = 1; Q[1] = 0; Q[2] = 0; Q[3] = 0;
+  Q[4] = 0; Q[5] = 0; Q[6] = 0; Q[7] = 0;
+}
+
+//----------------------------------------------------------------------
+// 並進複合四元数 ULproject
+//
+// inp x, y, z
+// out Q
+//----------------------------------------------------------------------
+function Translate(x, y, z)
+{
+  var A = new Array(8);
+
+  A[0] = 1; A[1] = 0; A[2] = 0; A[3] = 0;
+  A[4] = 0; A[5] = x; A[6] = y; A[7] = z;
+  Mult(A);
+}
+
+//----------------------------------------------------------------------
+// 回転複合四元数 ULproject
+//
+// inp d, x, y, z
+// out Q
+//----------------------------------------------------------------------
+function Rotate(d, x, y, z)
+{
+  var A = new Array(8);
+  var t;
+
+  t = d * Math.PI / 360; //--- t(rad) = d(ﾟ)/2
+  A[0] = Math.cos(t);
+  t = Math.sin(t) / Math.sqrt(x*x + y*y + z*z);
+  A[1] = x * t;
+  A[2] = y * t;
+  A[3] = z * t;
+  A[4] = 0; A[5] = 0; A[6] = 0; A[7] = 0;
+  Mult(A);
+}
+
+//----------------------------------------------------------------------
+// 位置の初期化
+//----------------------------------------------------------------------
+function reset()
+{
+  Identity();
+  Translate(0, 0, -800);
+}
+
+//----------------------------------------------------------------------
+// 箱を描く ULproject
+//
+// inp ic,id,vr,vz,p1
+//----------------------------------------------------------------------
+function box(p1, ic, id, vr, vz)
+{
+  var i, z;
+  var px = new Array(In);
+  var py = new Array(In);
+
+  for (i = 0; i < In; i++)
+  {
+    z = (vz - p1[i][2]) / vz;
+    if (z < 0.1) z = 0.1;
+    z = 200 / (vr * z);
+    px[i] = 320 + p1[i][0] * z;
+    py[i] = 200 - p1[i][1] * z;
+  }
+  line(px[0], py[0], px[4], py[4], id);
+  line(px[1], py[1], px[5], py[5], id);
+  line(px[2], py[2], px[6], py[6], id);
+  line(px[3], py[3], px[7], py[7], id);
+  line(px[4], py[4], px[5], py[5], id);
+  line(px[5], py[5], px[6], py[6], id);
+  line(px[6], py[6], px[7], py[7], id);
+  line(px[7], py[7], px[4], py[4], id);
+  line(px[0], py[0], px[1], py[1], ic);
+  line(px[1], py[1], px[2], py[2], ic);
+  line(px[2], py[2], px[3], py[3], ic);
+  line(px[3], py[3], px[0], py[0], ic);
+}
+
+//----------------------------------------------------------------------
+// キー入力 ULproject
+//
+// out M
+//----------------------------------------------------------------------
+function inpkey()
+{
+  var tt, tx, ty, tz;
+
+  rr = 1; tt = 2;
+  if (Mode) { rr = -rr / 2; tt = -tt; }
+  rx = 0; ry = 0; rz = 0; tx = 0; ty = 0; tz = 0; th = 1;
+  if (Key[ 38]) rx = -rr; //--- ↑  機首を下げる
+  if (Key[ 40]) rx =  rr; //--- ↓  機首を上げる
+  if (Key[ 39]) ry = -rr; //--- →  右旋回
+  if (Key[ 37]) ry =  rr; //--- ←  左旋回
+  if (Key[219]) rz = -rr; //--- [   右傾き
+  if (Key[ 80]) rz =  rr; //--- p   左傾き
+  if (Key[226]) tz = -tt; //--- \(_)前に並進
+  if (Key[191]) tz =  tt; //--- /   後に並進
+  if (Key[186]) ty = -tt; //--- :   下に並進
+  if (Key[192]) ty =  tt; //--- @   上に並進
+  if (Key[187]) tx = -tt; //--- ;   左に並進
+  if (Key[221]) tx =  tt; //--- ]   右に並進
+  if (Key[ 16]) th =  5 ; //--- SHIFT 高速
+  rx *= th; ry *= th; rz *= th;
+  tx *= th; ty *= th; tz *= th;
+  Translate(tx, ty, tz);
+  Rotate(rx, 1.0, 0.0, 0.0);
+  Rotate(ry, 0.0, 1.0, 0.0);
+  Rotate(rz, 0.0, 0.0, 1.0);
+}
+
+//----------------------------------------------------------------------
+document.body.addEventListener('keydown', event =>
+{
+  if (event.keyCode == 13) { reset() ; } // Enter
+  if (event.keyCode == 49) { Mode = 0; } // '1'
+  if (event.keyCode == 50) { Mode = 1; } // '2'
+});
+
+var Pv = new Array(In); // 頂点座標
+for (var i = 0; i < In; i++) { Pv[i] = new Array(3); }
+
+//----------------------------------------------------------------------
+function idle()
+{
+  cls('#000');
+
+  color('#fff');
+  ctx.font = "16px 'ＭＳ ゴシック'";
+  ctx.fillText("HTMLでクォータニオン (1回目) ULproject", 0, 16);
+  inpkey();
+  Product(Pv, Pp);
+  box(Pv, Ic, Id, Vr, Vz);
+  window.requestAnimationFrame(idle);
+}
+
+//----------------------------------------------------------------------
+reset();
+idle();
+
+//----------------------------------------------------------------------
+//  1  2           |  1モデルモード 2ビューモード
+//                 |
+//  p  @  [  enter |  p左傾き    @上に移動  [右傾き   enter初期位置へ
+//  ;  :  ]        |  ;左に移動  :下に移動  ]右に移動
+//                 |
+//    ↑           |           ↑機首下げ
+// ← ↓ →        | ←左旋回  ↓機首上げ  →右旋回
+//                 |
+//  /  \(_)  +shift|  /後進  \(_)前進                +shiftで速く移動
+//----------------------------------------------------------------------
+</script>
+</body>
+</html>
