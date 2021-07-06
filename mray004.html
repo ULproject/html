@@ -1,0 +1,765 @@
+<!--
+------------------------------------------------------------------------
+ HTMLで動くレイトレーシング (4回目)
+
+ by ULproject for HTML(JavaScript, canvas) 2021.6
+
+ 減衰しない点光源(球0)で球を表示(屈折) クォータニオン Sphere(r)
+
+ コメントの大文字はベクトル、小文字はスカラー
+----------------------------------------------------------------------
+-->
+<!DOctxYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>HTMLで動くレイトレーシング(4回目) ULproject</title>
+</head>
+<body>
+<p id="movingraytracing1"></p>
+<script>
+
+const canvas = document.createElement('canvas');
+const ctx = canvas.getContext('2d');
+ 
+canvas.width  = '640';
+canvas.height = '400';
+
+document.body.appendChild(canvas);
+
+//----------------------------------------------------------------------
+// 描画関数
+//----------------------------------------------------------------------
+function cls(c)
+{
+  ctx.fillStyle = c;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+function color(c)
+{
+  ctx.fillStyle   = c;
+  ctx.strokeStyle = c;
+}
+function lineb(x, y, w, h, c)
+{
+  ctx.strokeStyle = c;
+  ctx.strokeRect(x, y, w, h);
+}
+function linebf(x, y, w, h, c)
+{
+  ctx.fillStyle = c;
+  ctx.fillRect(x, y, w, h);
+}
+//----------------------------------------------------------------------
+// inkey
+//----------------------------------------------------------------------
+var Key = new Array(256);
+for (var i = 0; i < 256; i++) Key[i] = 0;
+window.onkeydown = function(event) { Key[event.keyCode] = 1; }
+window.onkeyup   = function(event) { Key[event.keyCode] = 0; }
+
+//----------------------------------------------------------------------
+// 共有変数
+//----------------------------------------------------------------------
+var Q  = new Array(8); // Current 複合四元数
+var Mode = 1; // Quata mode (0:Model mode 1:View mode)
+
+var Am = 0.3;	// 環境光
+var Level = 6;	// Level
+
+var SnMax = 10; // 球の最大数
+var Sn = 0;	// 球の個数
+var SP = new Array(SnMax); // 頂点座標
+for (var i = 0; i < SnMax; i++) { SP[i] = new Array(3); }
+var Sr = new Array(SnMax); // radius
+var SD = new Array(SnMax); // diffuse(RGB)
+for (var i = 0; i < SnMax; i++) { SD[i] = new Array(3); }
+var Ss = new Array(SnMax); // specular
+var Sh = new Array(SnMax); // shininess
+var Sl = new Array(SnMax); // reflect
+var Sc = new Array(SnMax); // clarity
+var Se = new Array(SnMax); // refract
+
+var SD0 = [1, 1, 1];
+var Ss0 = 1;
+var Sh0 = 1;
+var Sl0 = 0;
+var Sc0 = 0;
+var Se0 = 1;
+
+var SpMax = 10;
+var Sp = 0;
+
+var Stack = new Array(SpMax); // Push Q
+for (var i = 0; i < SpMax; i++) { Stack[i] = new Array(8); }
+
+var A   = 4;
+var RES = [512/A, 320/A, A];	//  x dots , y dots, dot size
+
+//----------------------------------------------------------------------
+// 視点位置ベクトルV0から、視線単位ベクトルE方向の視線と
+// 原点中心で半径rの球との交点までの距離t0を求める by ULproject
+//
+// |P|=r  … 球   , tt + 2(V･E)t + V･V - rr = 0
+// P=V+Et … 視線 , t = -(V･E)±sqr{(V･E)^2 - V･V + rr}
+//
+// inp V0,E,r  V0は球が原点の時の視点Vの値
+// out t0
+//----------------------------------------------------------------------
+function distance_sphere(V, E, r)
+{
+  var b, d, t;
+
+  b = V[0]*E[0] + V[1]*E[1] + V[2]*E[2];	// b = V･E
+  d = V[0]*V[0] + V[1]*V[1] + V[2]*V[2] - r*r;	// d = V･V - rr
+  d = b*b - d;					// d判別式
+  if (d < 0) return -1.0;			// 交点なし
+  d = Math.sqrt(d);
+  t = -b - d;			// 視線と球の近い方の交点距離
+  if (t < 0) t = -b + d;	// 視線と球の遠い方の交点距離
+  return t;
+}
+
+//----------------------------------------------------------------------
+// 視点位置ベクトルVから、視線単位ベクトルE方向の視線と球との交点との
+// 距離tの内で一番近い前方のtと球番号siを求める by ULproject
+//
+// inp V,E,SP,sr,sn
+// out _t,si
+//----------------------------------------------------------------------
+function distance(_t, V, E)
+{
+  var V0 = [0, 0, 0];
+  var t0, t, si, c;
+
+  t = -1.0;
+  si = -1;
+  for (c = 0; c < Sn; c++)
+  {
+    V0[0] = V[0] - SP[c][0];
+    V0[1] = V[1] - SP[c][1];
+    V0[2] = V[2] - SP[c][2];
+    t0    = distance_sphere(V0, E, Sr[c]);
+    if (t0 >= 0)
+    {
+      if (t0 < t || t < 0) { t = t0; si = c; }
+    }
+  }
+  _t[0] = t;
+  return si;
+}
+
+//----------------------------------------------------------------------
+// 点を描く by ULproject
+//
+// inp CL,x0,y0,ix,iy,iz
+//----------------------------------------------------------------------
+function draws(CL, x0, y0, ix, iy, iz)
+{
+  var c, i;
+
+  if (CL[3] < 0.0) return;
+  c  = '#';
+  i = Math.floor(CL[0]*255);
+  if (i > 255) i = 255; else if (i < 0) i = 0;
+  c += ('00' + i.toString(16)).substr(-2);	// R
+  i = Math.floor(CL[1]*255);
+  if (i > 255) i = 255; else if (i < 0) i = 0;
+  c += ('00' + i.toString(16)).substr(-2);	// G
+  i = Math.floor(CL[2]*255);
+  if (i > 255) i = 255; else if (i < 0) i = 0;
+  c += ('00' + i.toString(16)).substr(-2);	// B
+  linebf(ix*iz + x0, iy*iz + y0, iz, iz, c);
+}
+
+//----------------------------------------------------------------------
+// 反射(specular)ベクトルを求める by ULproject
+//
+// inp E,N (|N|=1  )
+// out S   (|S|=|E|)
+//----------------------------------------------------------------------
+function vector_specular(_S, E, N)
+{
+  var a;
+
+  a  = -2.0 * (E[0]*N[0] + E[1]*N[1] + E[2]*N[2]);
+  _S[0] = E[0] + N[0] * a;
+  _S[1] = E[1] + N[1] * a;
+  _S[2] = E[2] + N[2] * a;
+}
+
+//----------------------------------------------------------------------
+// 屈折ベクトルRと反射率k(k=1全反射)を求める by ULproject
+//
+// inp E,N,n2    (|N|=1, n2≠0)
+// out _R,k      (|R|=|E|)
+//----------------------------------------------------------------------
+function vector_refract(_R, E, N, n2)
+{
+  var a, b, c, d, f, k, n;
+
+  c = -E[0]*N[0] - E[1]*N[1] - E[2]*N[2];	// c = cosθ = -E・N
+  n = n2;					// n = n2/n1
+  f = 1.0;
+  if (c < 0.0)
+  {
+  	c = -c; n = 1.0/n; f = -1.0;	// 内から外
+  }
+  a = n*n - (1.0 - c*c);		// a = nn-(1-cc)
+  if (a < 0.0) return 1.0;		// a < 0ならk=1(全反射)
+  b = Math.sqrt(a);			// b = √(a)
+  k = (    b - c) / (    b + c);	// k = (  b-c)/(  b+c)
+  d = (n*n*c - b) / (n*n*c + b);	// d = (nnc-b)/(nnc+b)
+  k = (k*k + d*d) / 2.0;		// k = 1/2(kk+dd)
+  a = (b - c) * f;			// 内から外は負
+  _R[0] = (E[0] - N[0] * a) / n;
+  _R[1] = (E[1] - N[1] * a) / n;
+  _R[2] = (E[2] - N[2] * a) / n;	// 屈折R=(1/n){E-N{b-c}]
+  return k;
+}
+
+//----------------------------------------------------------------------
+// 視線と球の交点の色cl、陰影と陰(0≦rgb≦1)を求める by ULproject
+//
+// inp CL,V,E,t,si
+// out _CL, _P, _N
+//----------------------------------------------------------------------
+function shade_si(_CL, _P, _N, V, E, t, si)
+{
+  var V0 = new Array(3);
+  var E0 = new Array(3);
+  var S  = new Array(3);
+  var _t = new Array(1);
+  var a, b, t0, t1;
+
+  _CL[0] = SD[si][0]; _CL[1] = SD[si][1]; _CL[2] = SD[si][2];
+  if (si == 0) return;					// light
+  V0[0] = V[0] - SP[si][0];
+  V0[1] = V[1] - SP[si][1];
+  V0[2] = V[2] - SP[si][2];
+  _P[0] = V0[0] + E[0] * t;
+  _P[1] = V0[1] + E[1] * t;
+  _P[2] = V0[2] + E[2] * t;
+  b = Math.sqrt(_P[0]*_P[0] +_P[1]*_P[1] +_P[2]*_P[2]);	// P = V0+Et
+  if (b != 0.0) b = 1.0/b; else b = 0.0;
+  _N[0] = _P[0] * b;					// N = P/|P|
+  _N[1] = _P[1] * b;
+  _N[2] = _P[2] * b;
+  vector_specular(S, E, _N);
+  _P[0] += SP[si][0];				// P = (元の座標)
+  _P[1] += SP[si][1];
+  _P[2] += SP[si][2];
+  E0[0] = SP[0][0] - _P[0];			// 光源方向
+  E0[1] = SP[0][1] - _P[1];
+  E0[2] = SP[0][2] - _P[2];
+  b   = Math.sqrt(E0[0]*E0[0] + E0[1]*E0[1] + E0[2]*E0[2]);
+  t1  = b - Sr[0];				// 光源表面までの距離
+  if (b != 0.0) b = 1.0/b; else b = 0.0;
+  E0[0] *= b;
+  E0[1] *= b;
+  E0[2] *= b;					// E0 = L(光源方向)
+  b   = 0.1;//1.0e-8;				// 少し手前
+  t1 -= b * 2.0;				// 光源表面までより短く
+
+  V0[0] = _P[0] + E0[0] * b;			// 点Pと重ならないよう
+  V0[1] = _P[1] + E0[1] * b;			// V0を少し光源に寄せる 	
+  V0[2] = _P[2] + E0[2] * b;
+  distance(_t, V0, E0);
+  t0 = _t[0];
+
+  b = E0[0]*_N[0] + E0[1]*_N[1] + E0[2]*_N[2];	// b = L・N
+  if (b < 0.0) b = 0.0;
+  a = E0[0]* S[0] + E0[1]* S[1] + E0[2]* S[2];	// a = L・S specular
+  if (a < 0.0) a = 0.0;
+  a = a ** Sh[si];				// shininess
+  a = a *  Ss[si];
+  if (0.0 < t0 && t0 < t1) { b = 0.0; a = 0.0; }	// 陰
+  if (b < Am) b = Am;				// ambient
+  _CL[0] = _CL[0] * b + a;
+  _CL[1] = _CL[1] * b + a;
+  _CL[2] = _CL[2] * b + a;
+}
+
+//----------------------------------------------------------------------
+//視線と球の交点の色cl、陰影と陰(0≦rgb≦1)を求める by ULproject
+//
+// inp V,E,slc,li
+// out _CL
+//----------------------------------------------------------------------
+function shade(_CL, V, E, slc, li)
+{
+  var CL0 = new Array(4);
+  var P   = new Array(3);
+  var S   = new Array(3);
+  var V0  = new Array(3);
+  var N   = new Array(3);
+  var _t  = new Array(1);
+  var t, sl1, sc1, k, b, si;
+
+  _CL[0] = 0.0; _CL[1] = 0.0; _CL[2] = 0.0; _CL[3] = -1.0;
+
+  // 光slcが小さすぎるか、追跡回数が大きすぎる時、追跡終了
+  if (slc < 1.0/255.0 || li > Level) return;
+  li++;	// Level
+  si = distance(_t, V, E);
+  t = _t[0];
+  if (t < 0.0) return;
+  shade_si(CL0, P, N, V, E, t, si);
+  _CL[0] = CL0[0] * slc;
+  _CL[1] = CL0[1] * slc;
+  _CL[2] = CL0[2] * slc;
+  _CL[3] = 1.0;
+
+  sl1 = Sl[si];
+  sc1 = Math.sqrt(Sc[si]);
+
+  if (sl1 + sc1 <= 0.0) return;
+  if (sc1 > 0.0)
+  {
+    k = vector_refract(S, E, N, Se[si]);
+    sl1 += sc1 * k;
+    if (k < 1.0)
+    {
+      b = 0.1;//1.0e-8;		// 少し手前
+      V0[0] = P[0] + S[0] * b;
+      V0[1] = P[1] + S[1] * b;
+      V0[2] = P[2] + S[2] * b;
+      slc *= sc1 * (1.0 - k);
+      shade(CL0, V0, S, slc, li);
+      if (CL0[3] >= 0.0)
+      {
+        _CL[0] += CL0[0]; _CL[1] += CL0[1]; _CL[2] += CL0[2];
+      }
+      sl1 = Sl[si] + Sc[si] * k;
+    }
+  }
+  if (sl1 > 0.0)
+  {
+    vector_specular(S, E, N);
+    b = 0.1;//1.0e-8;		// 少し手前
+    V0[0] = P[0] + S[0] * b;
+    V0[1] = P[1] + S[1] * b;
+    V0[2] = P[2] + S[2] * b;
+    slc *= sl1;
+    shade(CL0, V0, S, slc, li);
+    if (CL0[3] >= 0.0)
+    {
+      _CL[0] += CL0[0]; _CL[1] += CL0[1]; _CL[2] += CL0[2];
+    }
+  }
+}
+
+//----------------------------------------------------------------------
+// スクリーンVXYZからの視点位置ベクトルVと視線単位ベクトルEの生成
+// VXYZ(0),(1),(2)=screen幅/2,高/2,視点screen間距離 by ULproject
+//
+// V(0) = VXYZ(0)*x , V(1) = VXYZ(1)*y , V(2) = 0 (-1≦x,y≦1)
+// E(0) = V(0)/|E|  , E(1) = V(1)/|E|  , E(2) = -VXYZ(2)/|E|
+//
+// inp VXYZ,x,y
+// out _V,_E
+//----------------------------------------------------------------------
+function ray_view(_V, _E, VXYZ, x, y)
+{
+  var a;
+
+  _V[0]  = VXYZ[0] * x; _V[1]  = VXYZ[1] * y; _V[2]  =  0.0    ;
+  _E[0]  = _V[0]      ; _E[1]  = _V[1]      ; _E[2]  = -VXYZ[2];
+  a = Math.sqrt(_E[0]*_E[0] + _E[1]*_E[1] + _E[2]*_E[2]);
+  _E[0] /= a          ; _E[1] /= a          ; _E[2] /= a       ;
+}
+
+//----------------------------------------------------------------------
+// 解像度RESのx,y(-1≦x,y≦1)方向視線で球をトレース by ULproject
+// RES(0),(1),(2)=x,yのドット数,ドットサイズ
+// 球x,y,z,r,c=中心x,y,z,半径,色    x,y,z座標の正方向=右,上,後ろ
+//
+// inp VX,YZ,sx,sy,sz,sr,sc
+//----------------------------------------------------------------------
+function ray_trace(VXYZ)
+{
+  var V  = new Array(3);
+  var E  = new Array(3);
+  var CL = new Array(4);
+  var iw, ih, ix, iy, iz, si;
+  var x0, y0;
+
+  iw = RES[0]; ih = RES[1]; iz = RES[2];
+  x0 = (640 - iw*iz) / 2; y0 = (400 - ih*iz) / 2;
+  lineb(x0 - 1, y0 - 1, iw*iz + 2, ih*iz + 2, '#fff');
+  iw--; ih--;
+  for (iy = 0; iy <= ih; iy++)
+  {
+    y = 1 - 2 * iy / ih;
+    for (ix = 0; ix <= iw; ix++)
+    {
+      x = 2 * ix / iw - 1;
+      ray_view(V, E, VXYZ, x, y);
+      shade(CL, V, E, 1, 0);
+      draws(CL, x0, y0, ix, iy, iz);
+    }
+  }
+}
+
+//----------------------------------------------------------------------
+function trace()
+{
+  var VXYZ = [16, 10, 40];	// Screen幅/2, 高/2, Screen-視点距離
+
+  ray_trace(VXYZ);
+}
+
+//----------------------------------------------------------------------
+// 複合四元数とベクトルの積 ULproject
+//
+// inp Q,p
+// out _p1 (_p1 = RpR~ + T)  R~ = Rの共役
+//----------------------------------------------------------------------
+function Product(_p1, p)
+{
+  var q1 = new Array(4);
+  var q2 = new Array(4);
+
+   q1[0] =   0 ; q1[1] =  p[0]; q1[2] =  p[1]; q1[3] =  p[2];
+   q2[0] = Q[0]; q2[1] = -Q[1]; q2[2] = -Q[2]; q2[3] = -Q[3];
+   Multqq(q1, q1, q2); //---    p Qr~
+   Multqq(q1, Q , q1); //--- Qr p Qr~
+   _p1[0] = q1[1] + Q[5];
+   _p1[1] = q1[2] + Q[6];
+   _p1[2] = q1[3] + Q[7]; //--- p'= Qr p Qr~ + Qt
+}
+
+//----------------------------------------------------------------------
+// 四元数の積 ULproject
+//
+// inp q1=(w1, x1, y1, z1),q2=(w2, x2, y2, z2)
+// out _q=(w0, x0, y0, z0) = (w1, x1, y1, z1)(w2, x2, y2, z2)
+//----------------------------------------------------------------------
+function Multqq(_q, q1, q2)
+{
+  var w, x, y, z;
+
+  w = q1[0]*q2[0] - q1[1]*q2[1] - q1[2]*q2[2] - q1[3]*q2[3];
+  x = q1[0]*q2[1] + q1[1]*q2[0] + q1[2]*q2[3] - q1[3]*q2[2];
+  y = q1[0]*q2[2] + q1[2]*q2[0] + q1[3]*q2[1] - q1[1]*q2[3];
+  z = q1[0]*q2[3] + q1[3]*q2[0] + q1[1]*q2[2] - q1[2]*q2[1];
+  _q[0] = w; _q[1] = x; _q[2] = y; _q[3] = z;
+}
+
+//----------------------------------------------------------------------
+// 複合四元数の積(Q = QA model mode , Q = AQ view mode) ULproject
+//
+// inp A
+// out Q (Qr=QrAr, Qt=Qt + QrAtQr~) (Qr=ArQr , Qt=At + ArQtAr~)
+//----------------------------------------------------------------------
+function Mult(A)
+{
+  var q = new Array(4);
+
+  if (Mode)
+  { //--- Q = AQ
+    q[0] = A[0]; q[1] = -A[1]; q[2] = -A[2]; q[3] = -A[3];
+    Multqq(q, Q.slice(4), q); //---   QtAr~
+    Multqq(q, A         , q); //--- ArQtAr~
+    Q[4] = A[4] + q[0];
+    Q[5] = A[5] + q[1];
+    Q[6] = A[6] + q[2];
+    Q[7] = A[7] + q[3]; //--- Qt = At + ArQtAr~
+    Multqq(Q, A, Q);    //--- Qr = ArQr
+  }
+  else
+  { //--- Q = QA
+    q[0] = Q[0]; q[1] = -Q[1]; q[2] = -Q[2]; q[3] = -Q[3];
+    Multqq(q, A.slice(4), q); //---   AtQr~
+    Multqq(q, Q         , q); //--- QrAtQr~
+    Q[4] += q[0];
+    Q[5] += q[1];
+    Q[6] += q[2];
+    Q[7] += q[3];    //--- Qt = Qt + QrAtQr~
+    Multqq(Q, Q, A); //--- Qr = QrAr
+  }
+}
+
+//----------------------------------------------------------------------
+// 単位複合四元数 ULproject
+//
+// out Q
+//----------------------------------------------------------------------
+function Identity()
+{
+  Q[0] = 1; Q[1] = 0; Q[2] = 0; Q[3] = 0;
+  Q[4] = 0; Q[5] = 0; Q[6] = 0; Q[7] = 0;
+}
+
+//----------------------------------------------------------------------
+// 並進複合四元数 ULproject
+//
+// inp x, y, z
+// out Q
+//----------------------------------------------------------------------
+function Translate(x, y, z)
+{
+  var A = new Array(8);
+
+  A[0] = 1; A[1] = 0; A[2] = 0; A[3] = 0;
+  A[4] = 0; A[5] = x; A[6] = y; A[7] = z;
+  Mult(A);
+}
+
+//----------------------------------------------------------------------
+// 回転複合四元数 ULproject
+//
+// inp d, x, y, z
+// out Q
+//----------------------------------------------------------------------
+function Rotate(d, x, y, z)
+{
+  var A = new Array(8);
+  var t;
+
+  t = d * Math.PI / 360; //--- t(rad) = d(ﾟ)/2
+  A[0] = Math.cos(t);
+  t = Math.sin(t) / Math.sqrt(x*x + y*y + z*z);
+  A[1] = x * t;
+  A[2] = y * t;
+  A[3] = z * t;
+  A[4] = 0; A[5] = 0; A[6] = 0; A[7] = 0;
+  Mult(A);
+}
+
+//----------------------------------------------------------------------
+// Push Q
+//----------------------------------------------------------------------
+function Push()
+{
+  if (Sp >= SpMax) return;
+  for (var i = 0; i < 8; i++) { Stack[Sp][i] = Q[i]; }
+  Sp++;
+}
+
+//----------------------------------------------------------------------
+// Pop Q
+//----------------------------------------------------------------------
+function Pop()
+{
+  if (Sp <= 0) return;
+  Sp--;
+  for (var i = 0; i < 8; i++) { Q[i] = Stack[Sp][i]; }
+}
+
+//----------------------------------------------------------------------
+// Diffuse
+//----------------------------------------------------------------------
+function Diffuse(r, g, b)
+{
+  SD0[0] = r; SD0[1] = g; SD0[2] = b;
+}
+
+//----------------------------------------------------------------------
+// 鏡面反射係数
+//----------------------------------------------------------------------
+function Specular(w)
+{
+  Ss0 = w;
+}
+
+//----------------------------------------------------------------------
+// 輝き
+//----------------------------------------------------------------------
+function Shininess(h)
+{
+  Sh0 = h;
+}
+
+//----------------------------------------------------------------------
+// 完全鏡面反射係数
+//----------------------------------------------------------------------
+function Reflect(r)
+{
+  Sl0 = r;
+}
+
+//----------------------------------------------------------------------
+// 透明度
+//----------------------------------------------------------------------
+function Clarity(c)
+{
+  Sc0 = c;
+}
+
+//----------------------------------------------------------------------
+// 屈折率
+//----------------------------------------------------------------------
+function Refract(n)
+{
+  Se0 = n;
+}
+
+//----------------------------------------------------------------------
+// Sphere
+//----------------------------------------------------------------------
+function Sphere(r)
+{
+  var p = [0, 0, 0];
+
+  if (Sn >= SnMax) return;
+
+  for (var i = 0; i < 3; i++) { SD[Sn][i] = SD0[i]; }  
+  Product(p, p);
+  for (var i = 0; i < 3; i++) { SP[Sn][i] = p[i]; }
+  Sr[Sn] = r;
+  Ss[Sn] = Ss0;
+  Sh[Sn] = Sh0;
+  Sl[Sn] = Sl0;
+  Sc[Sn] = Sc0;
+  Se[Sn] = Se0;
+  Sn++;
+}
+
+//----------------------------------------------------------------------
+// Model配置
+//----------------------------------------------------------------------
+function model()
+{
+  var md;
+
+  Sn = 0;    // Model reset
+  md = Mode; // Push Mode
+  Mode = 0;  // Model mode
+
+  Specular(1.0);
+  Shininess(10.0);
+  Reflect(0.0);
+  Clarity(0.0);
+  Refract(1.0);
+
+  // 光源
+  Diffuse(1.0, 1.0, 1.0);
+  Push();
+  Translate(-500, 500, 500);
+  Sphere(2);
+  Pop();
+
+  // 大球
+  Diffuse(0.0, 1.0, 1.0);
+  Push();
+  Translate(3, 8, -80);
+  Sphere(18);
+  Pop();
+
+  // 小球
+  Diffuse(1.0, 1.0, 0.0);
+  Push();
+  Translate(-6, 14, -60);
+  Sphere(6);
+  Pop();
+
+  // 透明
+  Diffuse(0.1, 0.1, 0.1);
+  Clarity(0.9);
+  Refract(1.2);
+  Push();
+  Translate(3, 9, -20);
+  Sphere(4);
+  Pop();
+
+  // 反射
+  Diffuse(0.5, 0.5, 0.5);
+  Reflect(0.5);
+  Clarity(0.0);
+  Refract(1.0);
+  Push();
+  Translate(0, -91, -90);
+  Sphere(80);
+  Pop();
+
+  Mode = md; // Pop Mode
+}
+
+//----------------------------------------------------------------------
+// 位置の初期化
+//----------------------------------------------------------------------
+function reset()
+{
+  Identity();
+}
+
+//----------------------------------------------------------------------
+// キー入力 ULproject
+//
+// out M
+//----------------------------------------------------------------------
+function inpkey()
+{
+  var tt, tx, ty, tz;
+
+  rr = 1; tt = 2;
+  if (Mode) { rr = -rr / 2; tt = -tt; }
+  rx = 0; ry = 0; rz = 0; tx = 0; ty = 0; tz = 0; th = 1;
+  if (Key[ 38]) rx = -rr; //--- ↑  機首を下げる
+  if (Key[ 40]) rx =  rr; //--- ↓  機首を上げる
+  if (Key[ 39]) ry = -rr; //--- →  右旋回
+  if (Key[ 37]) ry =  rr; //--- ←  左旋回
+  if (Key[219]) rz = -rr; //--- [   右傾き
+  if (Key[ 80]) rz =  rr; //--- p   左傾き
+  if (Key[226]) tz = -tt; //--- \(_)前に並進
+  if (Key[191]) tz =  tt; //--- /   後に並進
+  if (Key[186]) ty = -tt; //--- :   下に並進
+  if (Key[192]) ty =  tt; //--- @   上に並進
+  if (Key[187]) tx = -tt; //--- ;   左に並進
+  if (Key[221]) tx =  tt; //--- ]   右に並進
+  if (Key[ 16]) th =  5 ; //--- SHIFT 高速
+  rx *= th; ry *= th; rz *= th;
+  tx *= th; ty *= th; tz *= th;
+  Translate(tx, ty, tz);
+  Rotate(rx, 1.0, 0.0, 0.0);
+  Rotate(ry, 0.0, 1.0, 0.0);
+  Rotate(rz, 0.0, 0.0, 1.0);
+}
+
+//----------------------------------------------------------------------
+document.body.addEventListener('keydown', event =>
+{
+  if (event.keyCode == 13) { reset() ;                       } // Enter
+  if (event.keyCode == 32) { Rotate(180, 0, 1, 0);           } // ' '
+  if (event.keyCode == 49) { Mode = 0;                       } // '1'
+  if (event.keyCode == 50) { Mode = 1;                       } // '2'
+  if (event.keyCode == 51) { A = 1; RES = [512/A, 320/A, A]; } // '3'
+  if (event.keyCode == 52) { A = 2; RES = [512/A, 320/A, A]; } // '4'
+  if (event.keyCode == 53) { A = 4; RES = [512/A, 320/A, A]; } // '5'
+  if (event.keyCode == 54) { A = 8; RES = [512/A, 320/A, A]; } // '6'
+});
+
+//----------------------------------------------------------------------
+function idle()
+{
+  cls('#000');
+
+  color('#fff');
+  ctx.font = "16px 'ＭＳ ゴシック'";
+  ctx.fillText("HTMLで動くレイトレーシング (4回目) ULproject", 0, 16);
+  ctx.fillText("12 3456 @:;] p[ ↑↓←→  ／＼ Enter", 0, 16*2);
+  inpkey();
+  model();
+  trace();
+  window.requestAnimationFrame(idle);
+}
+
+//----------------------------------------------------------------------
+reset();
+idle();
+
+//----------------------------------------------------------------------
+//  1  2     3456  |  1モデルモード 2ビューモード 3456:1248dot/点
+//                 |
+//  p  @  [  enter |  p左傾き    @上に移動  [右傾き   enter初期位置へ
+//  ;  :  ]        |  ;左に移動  :下に移動  ]右に移動
+//                 |
+//    ↑           |           ↑機首下げ
+// ← ↓ →  space | ←左旋回  ↓機首上げ  →右旋回   spaceで後向く
+//                 |
+//  /  \(_)  +shift|  /後進  \(_)前進                +shiftで速く移動
+//----------------------------------------------------------------------
+</script>
+</body>
+</html>
